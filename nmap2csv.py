@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/python
 # -*- coding: utf-8 -*-
 
 # This file is part of nmaptocsv.
@@ -18,7 +18,9 @@
 #
 # You should have received a copy of the GNU Lesser General Public License
 # along with nmaptocsv.  If not, see <http://www.gnu.org/licenses/>.
-
+#
+# Modified slighly by s3nn
+#
 # Global imports
 import sys, re, csv, struct, socket, itertools
 
@@ -28,7 +30,7 @@ from optparse import OptionParser
 # Options definition
 option_0 = { 'name' : ('-i', '--input'), 'help' : 'Nmap scan output file (stdin if not specified)', 'nargs' : 1 }
 option_1 = { 'name' : ('-o', '--output'), 'help' : 'csv output filename (stdout if not specified)', 'nargs' : 1 }
-option_2 = { 'name' : ('-f', '--format'), 'help' : 'csv column format { fqdn, hop_number, ip, mac_address, mac_vendor, port, protocol, os, service, version } (default : ip-fqdn-port-protocol-service-version)', 'nargs' : 1 }
+option_2 = { 'name' : ('-f', '--format'), 'help' : 'csv column format { fqdn, hop_number, ip, mac_address, mac_vendor, port, protocol, state, os, service, version } (default : ip-fqdn-port-protocol-service-version)', 'nargs' : 1 }
 option_3 = { 'name' : ('-n', '--newline'), 'help' : 'insert a newline between each host for better readability', 'action' : 'count' }
 option_4 = { 'name' : ('-s', '--skip-header'), 'help' : 'do not print the csv header', 'action' : 'count' }
 
@@ -36,7 +38,7 @@ options = [option_0, option_1, option_2, option_3, option_4]
 
 # Format option
 DEFAULT_FORMAT = 'ip-fqdn-port-protocol-service-version'
-SUPPORTED_FORMAT_OBJECTS = [ 'fqdn', 'hop_number', 'ip', 'mac_address', 'mac_vendor', 'port', 'protocol', 'os', 'service', 'version' ]
+SUPPORTED_FORMAT_OBJECTS = [ 'fqdn', 'hop_number', 'ip', 'mac_address', 'mac_vendor', 'port', 'state', 'protocol', 'os', 'service', 'version' ]
 INVALID_FORMAT = 10
 VALID_FORMAT = 11
 
@@ -61,7 +63,7 @@ p_ip_nmap6 = 'Nmap.*for\s(?:(?P<fqdn_nmap6>.*) (?=\((?P<ip_nmap6>%s)\)))|Nmap.*f
 p_ip = re.compile('%s|%s' % (p_ip_nmap5, p_ip_nmap6))
 
 #-- Port finding
-p_port = re.compile('^(?P<number>[\d]+)\/(?P<protocol>tcp|udp)\s+(?:open|open\|filtered)\s+(?P<service>[\w\S]*)(?:\s*(?P<version>.*))?$')
+p_port = re.compile('^(?P<number>[\d]+)\/(?P<protocol>tcp|udp)\s+(?P<state>open|open\|filtered|closed)\s+(?P<service>[\w\S]*)(?:\s*(?P<version>.*))?$')
 
 #-- MAC address
 p_mac = re.compile('MAC Address:\s(?P<mac_addr>(%s))\s\((?P<mac_vendor>.*)\)' % p_mac_elementary)
@@ -93,7 +95,6 @@ def num_to_dottedquad(n):
 def unique_match_from_list(list):
 	"""
 		Check the list for a potential pattern match
-
 		@param list : a list of potential matching groups
 		
 		@rtype : return the unique value that matched, or nothing if nothing matched
@@ -108,7 +109,6 @@ def unique_match_from_list(list):
 def extract_matching_pattern(regex, group_name, unfiltered_list):
 	"""
 		Return the desired group_name from a list of matching patterns
-
 		@param regex : a regular expression with named groups
 		@param group_name : the desired matching group name value
 		@param unfiltered_list : a list of matches
@@ -169,6 +169,16 @@ class Host:
 				result.append(port.get_protocol())
 		return result
 
+	def get_port_state(self):
+		if not(self.get_port_list()):
+			return ['']
+		else:
+			result = []
+			for port in self.get_port_list():
+				result.append(port.get_state())
+		return result
+
+
 	def get_port_service_list(self):
 		if not(self.get_port_list()):
 			return ['']
@@ -214,11 +224,12 @@ class Host:
 		self.network_distance = network_distance
 
 class Port:
-	def __init__(self, number, protocol, service, version):
+	def __init__(self, number, protocol, service, version, state):
 		self.number = number
 		self.protocol = protocol
 		self.service = service
 		self.version = version
+		self.state = state
 	
 	def get_number(self):
 		return self.number
@@ -231,6 +242,9 @@ class Port:
 	
 	def get_version(self):
 		return self.version
+
+	def get_state(self):
+		return self.state
 
 def split_grepable_match(raw_string) :
 	"""
@@ -271,7 +285,7 @@ def split_grepable_match(raw_string) :
 		#-- Thanks to http://www.unspecific.com/nmap-oG-output/
 		number, state, protocol, owner, service, version = splitted_fields[0:6]
 		
-		new_port = Port(number, protocol, service, version)
+		new_port = Port(number, protocol, service, version, state)
 		
 		current_host.add_port(new_port)
 		
@@ -318,10 +332,11 @@ def parse(fd) :
 		if port and last_host != None:
 			number = str(port.group('number'))
 			protocol = str(port.group('protocol'))
+			state = str(port.group('state'))
 			service = str(port.group('service'))
 			version = str(port.group('version'))
 			
-			new_port = Port(number, protocol, service, version )
+			new_port = Port(number, protocol, service, version, state )
 			
 			last_host.add_port(new_port)
 		
@@ -364,7 +379,6 @@ def parse(fd) :
 def check_supplied_format(fmt):
 	"""
 		Check for the supplied custom output format
-
 		@param fmt : the supplied format
 		
 		@rtype : VALID_FORMAT or INVALID_FORMAT
@@ -402,7 +416,8 @@ def formatted_item(host, format_item):
 					'port':					host.get_port_number_list(),
 					'protocol':				host.get_port_protocol_list(),
 					'service':				host.get_port_service_list(),
-					'version':				host.get_port_version_list()
+					'version':				host.get_port_version_list(),
+					'state':				host.get_port_state()
 					 }
 		
 		if format_item in option_map.keys():
@@ -428,7 +443,6 @@ def repeat_attributes(attribute_list):
 def generate_csv(fd, results, output_format, header, newline) :
 	"""
 		Generate a plain ';' separated csv file with the desired or default attribute format
-
 		@param fd : output file descriptor, could be a true file or stdout
 	"""
 	if results != {} :
